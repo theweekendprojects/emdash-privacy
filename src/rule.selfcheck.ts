@@ -1,40 +1,55 @@
 /**
- * Dependency-free self-check for rule.ts — the one piece of non-trivial logic.
- * Run via `bash scripts/selfcheck.sh` (compiles with tsc, runs with node).
- * No test framework: plain asserts, fails loud if the policy logic breaks.
+ * Self-check for rule.ts - the one piece of non-trivial logic. It asks c15t's
+ * REAL offline policy engine to resolve our rule, so a rule the runtime
+ * validator rejects (the exact bug that hid the banner) fails here, not in prod.
+ * Run via `bash scripts/selfcheck.sh`. No test framework: plain asserts.
  */
 import assert from "node:assert/strict";
+import { offline } from "@c15t/browser";
 import { buildPolicyRule, monthsToDays, OPTIONAL_C15T_CATEGORIES } from "./rule.js";
 
-// strict opt-in, deny-by-default, for every visitor
-const r = buildPolicyRule({ policyVersion: "1", cookieMaxAgeMonths: 12 });
-assert.equal(r.model, "opt-in", "must be opt-in (deny-by-default)");
-assert.equal(r.match.isDefault, true, "must match every visitor (no country keying)");
-assert.equal(r.prompt, "choice", "first layer is a choice banner");
+async function resolve(rule: unknown, country?: string) {
+	const factory = offline({ policyRules: [rule as never] });
+	const transport = factory({
+		consentCategories: ["necessary", "measurement", "marketing"],
+		prefetch: {},
+		translations: {},
+	} as never);
+	const res = await transport.init!({ overrides: country ? { country } : {}, user: null } as never);
+	return (res as { policyResolution: any }).policyResolution;
+}
 
-// accept AND reject both offered (no dark pattern)
-assert.ok(r.actions.includes("accept") && r.actions.includes("reject"), "accept+reject required");
-assert.deepEqual(r.preselectedCategories, [], "nothing pre-ticked under opt-in");
+const rule = buildPolicyRule({ policyVersion: "1", cookieMaxAgeMonths: 12 });
 
-// GPC denies every optional category
-assert.deepEqual(r.privacySignals.gpc.denyCategories, [...OPTIONAL_C15T_CATEGORIES], "GPC denies all optional");
-
-// never store PII in the proof
-assert.equal(r.proof.storeIp, false, "must not store IP");
-assert.equal(r.proof.storeUserAgent, false, "must not store user-agent");
-
-// validity follows the operator setting
-assert.equal(r.validity.choiceDays, 360, "12 months -> 360 days");
-assert.equal(buildPolicyRule({ policyVersion: "1", cookieMaxAgeMonths: 6 }).validity.choiceDays, 180, "6 months -> 180 days");
-
-// bad/absent max-age must fail safe to 12 months, never 0 (which would never re-ask)
+// --- static shape ---
+assert.equal(rule.model, "opt-in", "must be opt-in (deny-by-default)");
+assert.equal(rule.match.isDefault, true, "must match every visitor");
+assert.ok(rule.actions.includes("accept") && rule.actions.includes("reject"), "accept+reject required");
+assert.deepEqual(rule.preselectedCategories, [], "nothing pre-ticked");
+assert.deepEqual(rule.privacySignals.gpc.denyCategories, [...OPTIONAL_C15T_CATEGORIES], "GPC denies all optional");
+assert.equal(rule.proof.storeIp, false, "must not store IP");
+assert.equal(rule.proof.storeUserAgent, false, "must not store user-agent");
+assert.equal(rule.validity.choiceDays, 360, "12 months -> 360 days");
 assert.equal(monthsToDays(0), 360, "0 months falls back to 12");
 assert.equal(monthsToDays(Number.NaN), 360, "NaN months falls back to 12");
 assert.equal(monthsToDays(-5), 360, "negative months falls back to 12");
+assert.notEqual(
+	buildPolicyRule({ policyVersion: "1", cookieMaxAgeMonths: 12 }).copyRevision,
+	buildPolicyRule({ policyVersion: "2", cookieMaxAgeMonths: 12 }).copyRevision,
+	"version bump must change copyRevision",
+);
 
-// a policyVersion bump changes copyRevision -> returning visitors re-asked
-const a = buildPolicyRule({ policyVersion: "1", cookieMaxAgeMonths: 12 });
-const b = buildPolicyRule({ policyVersion: "2", cookieMaxAgeMonths: 12 });
-assert.notEqual(a.copyRevision, b.copyRevision, "version bump must change copyRevision");
+// --- the real engine accepts it, for EVERY visitor (the regression that hid the banner) ---
+for (const country of [undefined, "DE", "US", "JP", "GB"]) {
+	const p = await resolve(rule, country);
+	assert.equal(p.status, "matched", `engine must match country=${country ?? "none"}, got ${p.status}/${p.reason}`);
+	assert.equal(p.policy.model, "opt-in", "resolved model opt-in");
+	assert.equal(p.policy.prompt, "choice", "resolved prompt choice");
+}
+
+// version bump changes the resolved fingerprint (returning visitors re-asked)
+const f1 = (await resolve(buildPolicyRule({ policyVersion: "1", cookieMaxAgeMonths: 12 }), "DE")).fingerprints.choice;
+const f2 = (await resolve(buildPolicyRule({ policyVersion: "2", cookieMaxAgeMonths: 12 }), "DE")).fingerprints.choice;
+assert.notEqual(f1, f2, "policyVersion bump must change the choice fingerprint");
 
 console.log("rule.selfcheck: OK");

@@ -13,7 +13,7 @@
  *
  * Config is inlined by the `page:fragments` hook as `window.__emdashPrivacy`.
  */
-import { init, mountConsentUI, offline } from "@c15t/browser";
+import { init, offline } from "@c15t/browser";
 import type { SavePayload, SaveResult } from "@c15t/core";
 import "@c15t/browser/styles.css"; // esbuild emits this as dist/banner.css
 import { strings } from "../strings.js";
@@ -31,6 +31,23 @@ interface PrivacyConfig {
 }
 
 const cfg = (window as unknown as { __emdashPrivacy?: PrivacyConfig }).__emdashPrivacy;
+
+/**
+ * "system" means "match the PAGE". Sites theme via a CSS `color-scheme` on
+ * <html> (the landing page does), a `dark` class, or the OS preference. c15t's
+ * own "system" only reads the OS, so it showed a white banner on a dark page
+ * (seen live). Order: page color-scheme, then `dark`/`c15t-dark` class, then OS.
+ * ponytail: resolved once at load; a live theme toggle needs a MutationObserver.
+ */
+function resolveScheme(setting: PrivacyConfig["colorScheme"]): "light" | "dark" {
+	if (setting === "light" || setting === "dark") return setting;
+	const root = document.documentElement;
+	const declared = getComputedStyle(root).colorScheme || "";
+	if (/\bdark\b/.test(declared) && !/\blight\b/.test(declared)) return "dark";
+	if (/\blight\b/.test(declared) && !/\bdark\b/.test(declared)) return "light";
+	if (root.classList.contains("dark") || root.classList.contains("c15t-dark")) return "dark";
+	return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
 
 function routeBase(): string {
 	return "/_emdash/api/plugins/emdash-privacy";
@@ -80,17 +97,26 @@ function start(config: PrivacyConfig): void {
 	const client = init({
 		mode,
 		nonce: config.nonce,
-		// accentColor is applied via a CSS var on <html> by the page fragment,
-		// not here — ConsentUIOptions takes a full `theme`, not a single color.
-		ui: { colorScheme: config.colorScheme },
-		i18n: { locale: config.locale, messages: strings[config.locale] as never },
+		ui: {
+			colorScheme: resolveScheme(config.colorScheme),
+			// Non-modal: no dim overlay, no scroll lock, so Impressum/Datenschutz
+			// stay readable before a choice is made (FR1).
+			banner: { hideBranding: true, scrollLock: false },
+			dialog: { hideBranding: true },
+			// Floating reopen button = the "Cookie-Einstellungen" control (FR7).
+			trigger: { position: "bottom-left", showWhen: "after-consent" },
+		},
+		// Follow the PAGE locale (set server-side), never the browser language.
+		i18n: { locale: config.locale, messages: strings as never, detectBrowserLanguage: false },
 		// our two optional categories map to c15t measurement + marketing
 		consentCategories: ["necessary", "measurement", "marketing"],
 		scripts: config.scripts as never,
 		legalLinks: config.legalLinks as never,
 		reloadOnConsentRevoked: true,
 	});
-	mountConsentUI(client);
+	// init() already mounts the UI with the `ui` options above. A second
+	// mountConsentUI(client) call mounts a duplicate default UI (white, branded)
+	// on top of it - seen live.
 	// footer "Cookie-Einstellungen" control reopens preferences
 	(window as unknown as { emdashPrivacy?: unknown }).emdashPrivacy = client;
 }

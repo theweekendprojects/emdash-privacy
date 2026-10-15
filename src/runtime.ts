@@ -10,14 +10,26 @@
  *   - the visitor IP is never read or stored by this plugin
  */
 import { z } from "zod";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { PageFragmentContribution } from "emdash";
+import { adminRoute } from "./admin-page.js";
 import { buildPolicyRule } from "./rule.js";
-import { BANNER_VERSION, PLUGIN_ID, SETTINGS_DEFAULTS } from "./shared.js";
+import { BANNER_JS, BANNER_CSS } from "./assets.generated.js";
+import { BANNER_VERSION, SETTINGS_DEFAULTS } from "./shared.js";
 
-const ROUTE_BASE = `/_emdash/api/plugins/${PLUGIN_ID}`;
 const MAX_SAVES_PER_MIN = 30; // soft cap; hard cap is the CF rate-limit rule
+
+// The banner bundle as a base64 ES-module data: URL, computed once. base64 has
+// no `</`, so inlining `import("data:...")` never trips the HTML parser.
+let _bannerDataUrl: string | undefined;
+function bannerDataUrl(): string {
+	if (_bannerDataUrl) return _bannerDataUrl;
+	// btoa needs latin1; encode UTF-8 bytes first.
+	const bytes = new TextEncoder().encode(BANNER_JS);
+	let bin = "";
+	for (const b of bytes) bin += String.fromCharCode(b);
+	_bannerDataUrl = `data:text/javascript;base64,${btoa(bin)}`;
+	return _bannerDataUrl;
+}
 
 // ── settings ────────────────────────────────────────────────────────────────
 
@@ -103,28 +115,15 @@ const saveSchema = z
 
 const ALLOWED_GRANT_KEYS = new Set(["necessary", "measurement", "marketing"]);
 
-async function serveAsset(name: string, contentType: string): Promise<Response> {
-	// dist/ ships beside src/ in the published package; resolve relative to this module.
-	const path = fileURLToPath(new URL(`../dist/${name}`, import.meta.url));
-	const body = readFileSync(path);
-	return new Response(body, {
-		headers: {
-			"content-type": contentType,
-			// versioned filename -> safe to cache forever
-			"cache-control": "public, max-age=31536000, immutable",
-		},
-	});
-}
+// NOTE: EmDash plugin routes always JSON-serialize their return value (a
+// returned `Response` is wrapped, not sent raw), so the banner bundle cannot
+// be served from a route. Instead the `page:fragments` hook injects it inline
+// (trusted hooks emit raw markup). The Worker gzips the response, so the ~366
+// KB bundle is ~103 KB on the wire, and only on pages where the banner shows.
 
 export const consentRoutes = {
-	[`assets/banner.${BANNER_VERSION}.js`]: {
-		public: true,
-		handler: async () => serveAsset("banner.js", "text/javascript; charset=utf-8"),
-	},
-	[`assets/banner.${BANNER_VERSION}.css`]: {
-		public: true,
-		handler: async () => serveAsset("banner.css", "text/css; charset=utf-8"),
-	},
+	// Block Kit settings page behind the sidebar link (admin-session gated)
+	admin: adminRoute,
 
 	// single source of truth for the banner AND the (future) Datenschutz text
 	services: {
@@ -231,15 +230,21 @@ export const privacyHooks = {
 				{
 					kind: "html",
 					placement: "head",
-					html: `<link rel="stylesheet" href="${ROUTE_BASE}/assets/banner.${BANNER_VERSION}.css">`,
+					html: `<style data-emdash-privacy>${BANNER_CSS}</style>`,
 					key: "emdash-privacy-css",
 				},
 				{
-					kind: "external-script",
+					// esbuild builds an ESM bundle. We cannot serve it from a plugin
+					// route (EmDash JSON-wraps route returns), and inlining the raw
+					// source is unsafe: the HTML parser closes an inline <script> at
+					// the first literal `</` (c15t has one, inside a `/</gu` regex, so
+					// a blanket `</`->`<\/` escape would corrupt that regex). Instead
+					// load it as an ES module from a base64 data: URL — the bundle is
+					// base64 so it contains no `</`, nothing for the parser to break on.
+					kind: "inline-script",
 					placement: "body:end",
-					src: `${ROUTE_BASE}/assets/banner.${BANNER_VERSION}.js`,
-					defer: true,
-					attributes: nonceAttr,
+					code: `import(${JSON.stringify(bannerDataUrl())})`,
+					attributes: { type: "module", ...(nonceAttr ?? {}) },
 					key: "emdash-privacy-js",
 				},
 			];

@@ -1,5 +1,6 @@
 node_modules/
 dist/
+src/assets.generated.ts
 *.tsbuildinfo
 .DS_Store
 *.log
