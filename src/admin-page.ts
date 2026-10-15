@@ -8,15 +8,26 @@
  * Authorization: the route is NOT public, so EmDash gates it behind the admin
  * session (default permission `plugins:manage`).
  */
+import { purgeExpired } from "./purge.js";
 import { SETTINGS_DEFAULTS } from "./shared.js";
 
 export const ADMIN_PAGE_PATH = "/settings";
 const SAVE_ACTION = "save_privacy";
+const PURGE_ACTION = "purge_now";
 
 interface Interaction {
 	type?: string;
 	action_id?: string;
 	values?: Record<string, unknown>;
+}
+
+/** Same host-derived tenant key the /save route writes. */
+function siteHost(ctx: any): string {
+	try {
+		return new URL(ctx.site?.url ?? ctx.request?.url).hostname;
+	} catch {
+		return "unknown";
+	}
 }
 
 async function readKv<T>(ctx: any, key: string): Promise<T | undefined> {
@@ -28,6 +39,7 @@ async function buildPage(ctx: any, toast?: { message: string; type: "success" | 
 	const v = {
 		enabled: (await readKv<boolean>(ctx, "enabled")) ?? d.enabled,
 		services: (await readKv<string>(ctx, "services")) ?? d.services,
+		language: (await readKv<string>(ctx, "language")) ?? d.language,
 		colorScheme: (await readKv<string>(ctx, "colorScheme")) ?? d.colorScheme,
 		accentColor: (await readKv<string>(ctx, "accentColor")) ?? "",
 		privacyUrl: (await readKv<string>(ctx, "privacyUrl")) ?? "",
@@ -37,7 +49,8 @@ async function buildPage(ctx: any, toast?: { message: string; type: "success" | 
 		cookieMaxAgeMonths: (await readKv<number>(ctx, "cookieMaxAgeMonths")) ?? d.cookieMaxAgeMonths,
 		retentionMonths: (await readKv<number>(ctx, "retentionMonths")) ?? d.retentionMonths,
 	};
-	const total = await ctx.storage.consents.count();
+	const siteId = siteHost(ctx);
+	const total = await ctx.storage.consents.count({ siteId });
 
 	return {
 		blocks: [
@@ -62,6 +75,17 @@ async function buildPage(ctx: any, toast?: { message: string; type: "success" | 
 						multiline: true,
 						initial_value: v.services,
 						placeholder: '[{"id":"ga4","name":"Google Analytics","category":"analytics","src":"https://..."}]',
+					},
+					{
+						type: "select",
+						action_id: "language",
+						label: "Banner language",
+						options: [
+							{ label: "Auto (page locale)", value: "auto" },
+							{ label: "Deutsch", value: "de" },
+							{ label: "English", value: "en" },
+						],
+						initial_value: v.language,
 					},
 					{
 						type: "select",
@@ -103,6 +127,24 @@ async function buildPage(ctx: any, toast?: { message: string; type: "success" | 
 				],
 				submit: { label: "Save", action_id: SAVE_ACTION },
 			},
+			{
+				type: "actions",
+				elements: [
+					{
+						type: "button",
+						label: "Delete expired records now",
+						action_id: PURGE_ACTION,
+						style: "danger",
+						confirm: {
+							title: "Delete expired consent records?",
+							text: "Removes every consent record older than the retention period. This cannot be undone.",
+							confirm: "Delete",
+							deny: "Cancel",
+							style: "danger",
+						},
+					},
+				],
+			},
 		],
 		...(toast ? { toast } : {}),
 	};
@@ -126,6 +168,7 @@ async function save(ctx: any, values: Record<string, unknown>): Promise<string |
 	const writes: Record<string, unknown> = {
 		enabled: values.enabled === true,
 		services: rawServices,
+		language: ["auto", "de", "en"].includes(str("language")) ? str("language") : "auto",
 		colorScheme: scheme,
 		accentColor: str("accentColor"),
 		privacyUrl: str("privacyUrl"),
@@ -145,6 +188,10 @@ export const adminRoute = {
 		if (i.type === "form_submit" && i.action_id === SAVE_ACTION) {
 			const err = await save(ctx, i.values ?? {});
 			return buildPage(ctx, err ? { message: err, type: "error" } : { message: "Saved", type: "success" });
+		}
+		if (i.type === "block_action" && i.action_id === PURGE_ACTION) {
+			const n = await purgeExpired(ctx);
+			return buildPage(ctx, { message: `Deleted ${n} expired record(s)`, type: "success" });
 		}
 		return buildPage(ctx); // page_load / anything else
 	},

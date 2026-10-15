@@ -10,26 +10,28 @@
  *   - the visitor IP is never read or stored by this plugin
  */
 import { z } from "zod";
+import { PluginRouteError } from "emdash";
 import type { PageFragmentContribution } from "emdash";
 import { adminRoute } from "./admin-page.js";
+import { purgeDue, purgeExpired } from "./purge.js";
 import { buildPolicyRule } from "./rule.js";
-import { BANNER_JS, BANNER_CSS } from "./assets.generated.js";
-import { BANNER_VERSION, SETTINGS_DEFAULTS } from "./shared.js";
+import { BANNER_HASH, BANNER_JS } from "./assets.generated.js";
+import { BANNER_VERSION, PLUGIN_ID, SETTINGS_DEFAULTS, resolveLanguage } from "./shared.js";
 
 const MAX_SAVES_PER_MIN = 30; // soft cap; hard cap is the CF rate-limit rule
 
-// The banner bundle as a base64 ES-module data: URL, computed once. base64 has
-// no `</`, so inlining `import("data:...")` never trips the HTML parser.
-let _bannerDataUrl: string | undefined;
-function bannerDataUrl(): string {
-	if (_bannerDataUrl) return _bannerDataUrl;
-	// btoa needs latin1; encode UTF-8 bytes first.
-	const bytes = new TextEncoder().encode(BANNER_JS);
-	let bin = "";
-	for (const b of bytes) bin += String.fromCharCode(b);
-	_bannerDataUrl = `data:text/javascript;base64,${btoa(bin)}`;
-	return _bannerDataUrl;
-}
+/** Route that serves the bundle. The hash is in the name, so it is immutable. */
+const BUNDLE_ROUTE = `assets/banner-${BANNER_HASH}`;
+const BUNDLE_URL = `/_emdash/api/plugins/${PLUGIN_ID}/${BUNDLE_ROUTE}`;
+
+/**
+ * Tiny inline loader. The ~370 KB bundle is NOT inlined in every page: it is
+ * fetched once from the cached route above and imported from a Blob URL, so
+ * page views after the first only pay for this ~250-byte script. (EmDash wraps
+ * route return values as JSON, so the route returns the source as a string and
+ * the loader unwraps `.data`.)
+ */
+const LOADER = `fetch(${JSON.stringify(BUNDLE_URL)},{credentials:"omit"}).then(function(r){return r.json()}).then(function(j){return import(URL.createObjectURL(new Blob([j.data],{type:"text/javascript"})))}).catch(function(e){console.warn("[emdash-privacy] banner failed to load",e)});`;
 
 // ── settings ────────────────────────────────────────────────────────────────
 
@@ -37,6 +39,7 @@ interface ResolvedSettings {
 	enabled: boolean;
 	services: unknown[];
 	colorScheme: "system" | "light" | "dark";
+	language: string;
 	accentColor?: string;
 	privacyUrl?: string;
 	imprintUrl?: string;
@@ -67,6 +70,7 @@ async function loadSettings(ctx: any): Promise<ResolvedSettings> {
 		enabled: (await readSetting<boolean>(ctx, "enabled")) ?? d.enabled,
 		services,
 		colorScheme: (await readSetting<ResolvedSettings["colorScheme"]>(ctx, "colorScheme")) ?? d.colorScheme,
+		language: (await readSetting<string>(ctx, "language")) ?? d.language,
 		accentColor: await readSetting<string>(ctx, "accentColor"),
 		privacyUrl: await readSetting<string>(ctx, "privacyUrl"),
 		imprintUrl: await readSetting<string>(ctx, "imprintUrl"),
@@ -122,6 +126,13 @@ const ALLOWED_GRANT_KEYS = new Set(["necessary", "measurement", "marketing"]);
 // KB bundle is ~103 KB on the wire, and only on pages where the banner shows.
 
 export const consentRoutes = {
+	// the banner bundle: public, GET, immutable-cached (name carries the content hash)
+	[BUNDLE_ROUTE]: {
+		public: true,
+		cacheControl: "public, max-age=31536000, immutable",
+		handler: async () => BANNER_JS,
+	},
+
 	// Block Kit settings page behind the sidebar link (admin-session gated)
 	admin: adminRoute,
 
@@ -142,17 +153,20 @@ export const consentRoutes = {
 			for (const k of ALLOWED_GRANT_KEYS) grants[k] = ctx.input.grants[k] === true;
 			grants.necessary = true; // always on
 			const siteId = siteIdFromCtx(ctx);
-			// soft per-site flood cap (no IP). Ceiling: KV is eventually consistent
-			// across colos; the hard cap is a Cloudflare rate-limit rule (go-live).
-			const bucket = `rl:save:${siteId}:${Math.floor(Date.now() / 60000)}`;
-			const n = ((await ctx.kv.get(bucket)) as number | null) ?? 0;
+			// soft per-site flood cap (no IP). ONE kv row per site holding the current
+			// minute and its count (overwritten each minute), so storage stays bounded.
+			// Ceiling: kv read-then-write is not atomic and is eventually consistent
+			// across colos, so a burst can overshoot slightly; the hard cap is a
+			// Cloudflare rate-limit rule on this route (go-live checklist).
+			const minute = Math.floor(Date.now() / 60000);
+			const key = `rl:save:${siteId}`;
+			const cur = (await ctx.kv.get(key)) as { m: number; n: number } | null;
+			const n = cur && cur.m === minute ? cur.n : 0;
 			if (n >= MAX_SAVES_PER_MIN) {
-				// ponytail: verify how EmDash maps this to an HTTP status (thrown
-				// Responses surfaced as 500 above); a non-2xx is all the client needs
-				// to keep the save queued, so a plain Error is enough.
-				throw new Error("rate_limited");
+				// 429 so the client (c15t outbox) keeps the save queued and retries later
+				throw new PluginRouteError("RATE_LIMITED", "Too many consent saves", 429);
 			}
-			await ctx.kv.set(bucket, n + 1);
+			await ctx.kv.set(key, { m: minute, n: n + 1 });
 
 			await ctx.storage.consents.put(crypto.randomUUID(), {
 				siteId, // host-attested, authoritative
@@ -163,6 +177,18 @@ export const consentRoutes = {
 				policyVersion: ctx.input.policyVersion,
 				bannerVersion: ctx.input.bannerVersion,
 			}); // NO ip, user-agent, email, name, country
+			// Lazy retention: the daily cron hook proved unreliable (the host swallows
+			// hook errors), so also purge from here - at most once a day, one bounded
+			// batch - using only code paths this route already relies on. Never let a
+			// purge problem fail a consent save.
+			try {
+				if (purgeDue(await ctx.kv.get("state:lastPurge"), Date.now())) {
+					await ctx.kv.set("state:lastPurge", { at: Date.now(), via: "save" });
+					await purgeExpired(ctx, 1);
+				}
+			} catch (err) {
+				ctx.log?.error?.(`[emdash-privacy] lazy purge failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
 			return { ok: true };
 		},
 	},
@@ -182,18 +208,20 @@ export const privacyHooks = {
 	cron: {
 		handler: async (event: any, ctx: any) => {
 			if (event.name !== "retention-purge") return;
-			const months = (await readSetting<number>(ctx, "retentionMonths")) ?? SETTINGS_DEFAULTS.retentionMonths;
-			const cutoff = Date.now() - months * 30 * 86_400_000;
-			// delete in bounded batches so one cron run can't run unbounded
-			for (let i = 0; i < 50; i++) {
-				const res = await ctx.storage.consents.query({
-					where: { ts: { lt: cutoff } },
-					orderBy: { ts: "asc" },
-					limit: 200,
-				});
-				if (!res.items.length) break;
-				await ctx.storage.consents.deleteMany(res.items.map((it: any) => it.id));
-				if (!res.hasMore) break;
+			// Purge FIRST. Bookkeeping must never block the purge: observed live,
+			// `ctx.kv.set` can fail inside the cron context, and an exception before the
+			// delete silently skipped it. The host swallows hook errors, so record the
+			// outcome best-effort only. (The lazy purge in /save is the backstop.)
+			let outcome: Record<string, unknown>;
+			try {
+				outcome = { at: Date.now(), via: "cron", deleted: await purgeExpired(ctx) };
+			} catch (err) {
+				outcome = { at: Date.now(), via: "cron", error: (err instanceof Error ? err.message : String(err)).slice(0, 300) };
+			}
+			try {
+				await ctx.kv.set("state:lastPurge", outcome);
+			} catch {
+				/* best-effort */
 			}
 		},
 	},
@@ -204,7 +232,7 @@ export const privacyHooks = {
 			// no banner when disabled or when there is nothing to consent to
 			if (!s.enabled || s.services.length === 0) return null;
 
-			const locale = String(event.page?.locale ?? "").toLowerCase().startsWith("en") ? "en" : "de";
+			const locale = resolveLanguage(s.language, event.page?.locale);
 			const rule = buildPolicyRule({
 				policyVersion: s.policyVersion,
 				cookieMaxAgeMonths: s.cookieMaxAgeMonths,
@@ -231,23 +259,14 @@ export const privacyHooks = {
 					key: "emdash-privacy-config",
 				},
 				{
-					kind: "html",
-					placement: "head",
-					html: `<style data-emdash-privacy>${BANNER_CSS}</style>`,
-					key: "emdash-privacy-css",
-				},
-				{
-					// esbuild builds an ESM bundle. We cannot serve it from a plugin
-					// route (EmDash JSON-wraps route returns), and inlining the raw
-					// source is unsafe: the HTML parser closes an inline <script> at
-					// the first literal `</` (c15t has one, inside a `/</gu` regex, so
-					// a blanket `</`->`<\/` escape would corrupt that regex). Instead
-					// load it as an ES module from a base64 data: URL — the bundle is
-					// base64 so it contains no `</`, nothing for the parser to break on.
+					// Tiny loader; the bundle itself comes from the immutable-cached route.
+					// Not inlined: the HTML parser closes an inline <script> at the first
+					// literal `</` (c15t has one inside a `/</gu` regex), and inlining would
+					// also re-send ~370 KB with every page view.
 					kind: "inline-script",
 					placement: "body:end",
-					code: `import(${JSON.stringify(bannerDataUrl())})`,
-					attributes: { type: "module", ...(nonceAttr ?? {}) },
+					code: LOADER,
+					attributes: nonceAttr,
 					key: "emdash-privacy-js",
 				},
 			];

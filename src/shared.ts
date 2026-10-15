@@ -42,6 +42,16 @@ export const SETTINGS_SCHEMA = {
 		description:
 			'JSON array: [{"id","name","category":"analytics"|"marketing","provider","purpose","src"}]. The banner only shows when this is non-empty.',
 	},
+	language: {
+		type: "select",
+		label: "Banner language",
+		description: "Auto follows the page locale. German is used for anything that is not English.",
+		options: [
+			{ value: "auto", label: "Auto (page / site locale)" },
+			{ value: "de", label: "Deutsch" },
+			{ value: "en", label: "English" },
+		],
+	},
 	colorScheme: {
 		type: "select",
 		label: "Color scheme",
@@ -73,7 +83,19 @@ export const SETTINGS_DEFAULTS = {
 	enabled: true,
 	services: "[]",
 	colorScheme: "system" as const,
+	language: "auto" as const,
 	policyVersion: "1",
 	cookieMaxAgeMonths: 12,
 	retentionMonths: 36,
 };
+
+/**
+ * Banner language. The operator setting wins; "auto" follows the PAGE locale
+ * (event.page.locale). We deliberately do not fall back to the site locale:
+ * EmDash reports "en" for it even when nobody configured one, which would flip
+ * a German-market site to English. Anything that is not English gets German.
+ */
+export function resolveLanguage(setting: unknown, pageLocale: unknown): "de" | "en" {
+	if (setting === "de" || setting === "en") return setting;
+	return typeof pageLocale === "string" && pageLocale.toLowerCase().startsWith("en") ? "en" : "de";
+}

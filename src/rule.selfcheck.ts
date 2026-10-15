@@ -6,6 +6,8 @@
  */
 import assert from "node:assert/strict";
 import { offline } from "@c15t/browser";
+import { retentionCutoff, purgeDue, DAY_MS } from "./purge.js";
+import { resolveLanguage } from "./shared.js";
 import { buildPolicyRule, monthsToDays, OPTIONAL_C15T_CATEGORIES } from "./rule.js";
 
 async function resolve(rule: unknown, country?: string) {
@@ -51,5 +53,28 @@ for (const country of [undefined, "DE", "US", "JP", "GB"]) {
 const f1 = (await resolve(buildPolicyRule({ policyVersion: "1", cookieMaxAgeMonths: 12 }), "DE")).fingerprints.choice;
 const f2 = (await resolve(buildPolicyRule({ policyVersion: "2", cookieMaxAgeMonths: 12 }), "DE")).fingerprints.choice;
 assert.notEqual(f1, f2, "policyVersion bump must change the choice fingerprint");
+
+// --- retention cutoff (purge.ts) ---
+const NOW = 1_800_000_000_000;
+assert.equal(retentionCutoff(NOW, 36), NOW - 36 * 30 * DAY_MS, "36 months -> 1080 days back");
+assert.equal(retentionCutoff(NOW, 1), NOW - 30 * DAY_MS, "1 month -> 30 days back");
+for (const bad of [0, -3, Number.NaN, undefined, null, "12"]) {
+	assert.equal(retentionCutoff(NOW, bad), NOW - 36 * 30 * DAY_MS, `bad retention ${String(bad)} falls back to 36 (never 'delete everything')`);
+}
+
+// --- lazy purge scheduling ---
+assert.equal(purgeDue(null, NOW), true, "never ran -> due");
+assert.equal(purgeDue(undefined, NOW), true, "no state -> due");
+assert.equal(purgeDue({ at: NOW - 1000 }, NOW), false, "ran a second ago -> not due");
+assert.equal(purgeDue({ at: NOW - DAY_MS }, NOW), true, "ran a day ago -> due");
+assert.equal(purgeDue({ at: "x" }, NOW), true, "garbage state -> due (fail toward purging)");
+
+// --- banner language ---
+assert.equal(resolveLanguage("en", "de"), "en", "operator setting wins");
+assert.equal(resolveLanguage("de", "en-GB"), "de", "operator setting wins (de)");
+assert.equal(resolveLanguage("auto", "en-GB"), "en", "page locale en");
+assert.equal(resolveLanguage("auto", null), "de", "no page locale -> German-market default");
+assert.equal(resolveLanguage("auto", "fr"), "de", "non-English page locale -> German");
+assert.equal(resolveLanguage(undefined, "EN"), "en", "case-insensitive");
 
 console.log("rule.selfcheck: OK");

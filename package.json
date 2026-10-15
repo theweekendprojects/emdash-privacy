@@ -1,7 +1,7 @@
 {
   "name": "emdash-privacy",
-  "version": "0.0.0",
-  "description": "Per-site GDPR/TDDDG cookie consent for EmDash CMS. A themed, dark/light consent banner (DE/EN) with Google Consent Mode v2 and GPC, powered by c15t, with consent proof stored in your own D1 and no third-party backend. Later: Impressum/Datenschutz page scaffolding.",
+  "version": "0.1.0",
+  "description": "Per-site GDPR/TDDDG cookie consent for EmDash CMS: a themed, dark/light consent banner (DE/EN) that follows your site's design, with Google Consent Mode v2 and GPC, powered by c15t. Consent proof is stored in your own D1, no third-party backend.",
   "type": "module",
   "license": "MIT",
   "author": "The Weekend Projects",
@@ -29,11 +29,12 @@
     "access": "public"
   },
   "plugin": {
-    "id": "privacy"
+    "id": "emdash-privacy"
   },
   "scripts": {
     "build:client": "node scripts/build-client.mjs",
-    "selfcheck": "bash scripts/selfcheck.sh"
+    "selfcheck": "bash scripts/selfcheck.sh",
+    "prepack": "npm run build:client"
   },
   "main": "./src/index.ts",
   "types": "./src/index.ts",

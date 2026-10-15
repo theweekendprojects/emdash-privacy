@@ -1,16 +1,23 @@
 # Changelog
 
-## Unreleased (0.0.0)
+## 0.1.0
 
-Initial scaffold.
+First usable release. Verified end to end on a live EmDash site (Cloudflare Workers + D1).
 
-- Trusted standard-format EmDash plugin: `privacyPlugin()` descriptor + `createPlugin()` runtime.
-- c15t consent banner driven by a composed transport: c15t's offline (local) policy engine for a
-  valid in-browser `policyResolution`, plus our own `save` that posts a PII-free proof to the
-  plugin's `/save` route. No third-party consent backend, no CDN.
-- Strict opt-in (deny-by-default) policy for every visitor (`src/rule.ts`), with a self-check.
-- DE/EN strings, dark/light, Google Consent Mode (basic variant via gated scripts), GPC.
-- Public routes: `save` (host-derived site id, strict validation, per-site KV flood cap, no IP),
-  `services` (single source of truth), versioned immutable-cached `assets/banner.*`.
-- Daily cron retention purge; `admin.settingsSchema` for per-site config.
-- Consent proof stored in the site's own D1 (plugin storage), no PII.
+- Consent banner (German + English) driven by c15t: strict opt-in for every visitor, Accept and Reject with
+  equal weight, preference dialog, floating reopen button, non-blocking card (bottom sheet on phones).
+- Follows the host site: colors, font and radius from the site's CSS variables, light/dark from the page
+  and updated live when the theme is toggled.
+- Gated scripts, Google Consent Mode v2 (basic variant: `default` denied, then `update`), GPC.
+- Consent proof in plugin storage (D1) with no personal data; failed saves are queued by c15t and retried.
+- Admin: "Privacy" sidebar page (Block Kit) and a settings form, including banner language, policy version
+  (bump = re-ask), re-ask period and retention.
+- Public `/save` is strictly validated, rejects a client-supplied `siteId`, and has a per-site soft rate
+  limit (HTTP 429). Add a Cloudflare rate-limiting rule as the hard cap.
+- Retention purge runs lazily from `/save` (the host did not reliably run the daily cron hook).
+- The ~380 KB bundle is served from an immutable, content-hashed route; pages only carry a ~1 KB loader.
+- Self-check resolves the policy rule through c15t's real engine for several countries, so a rule the
+  runtime would reject fails in CI instead of silently hiding the banner.
+
+Known limits: cron hook unreliable on the tested host; strict CSP needs `script-src blob:`; tenant
+isolation depends on the platform's plugin-storage isolation and was not exercised on a multi-site host.
