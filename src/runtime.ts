@@ -135,19 +135,22 @@ export const consentRoutes = {
 		public: true,
 		input: saveSchema,
 		handler: async (ctx: any) => {
-			// whitelist grant keys (schema allows any boolean record; constrain here)
-			for (const k of Object.keys(ctx.input.grants)) {
-				if (!ALLOWED_GRANT_KEYS.has(k)) {
-					throw new Response(JSON.stringify({ error: "bad_category" }), { status: 400 });
-				}
-			}
+			// c15t reports all five of its categories; we offer three. Keep only the
+			// known keys (never widen the stored row) instead of rejecting - a
+			// reject would drop a legitimate consent proof. Unknown keys are ignored.
+			const grants: Record<string, boolean> = {};
+			for (const k of ALLOWED_GRANT_KEYS) grants[k] = ctx.input.grants[k] === true;
+			grants.necessary = true; // always on
 			const siteId = siteIdFromCtx(ctx);
 			// soft per-site flood cap (no IP). Ceiling: KV is eventually consistent
 			// across colos; the hard cap is a Cloudflare rate-limit rule (go-live).
 			const bucket = `rl:save:${siteId}:${Math.floor(Date.now() / 60000)}`;
 			const n = ((await ctx.kv.get(bucket)) as number | null) ?? 0;
 			if (n >= MAX_SAVES_PER_MIN) {
-				throw new Response(JSON.stringify({ error: "rate_limited" }), { status: 429 });
+				// ponytail: verify how EmDash maps this to an HTTP status (thrown
+				// Responses surfaced as 500 above); a non-2xx is all the client needs
+				// to keep the save queued, so a plain Error is enough.
+				throw new Error("rate_limited");
 			}
 			await ctx.kv.set(bucket, n + 1);
 
@@ -156,7 +159,7 @@ export const consentRoutes = {
 				subjectId: ctx.input.subjectId, // c15t random client id, not person-derived
 				ts: ctx.input.givenAt ?? Date.now(),
 				action: ctx.input.action,
-				grants: ctx.input.grants,
+				grants,
 				policyVersion: ctx.input.policyVersion,
 				bannerVersion: ctx.input.bannerVersion,
 			}); // NO ip, user-agent, email, name, country
