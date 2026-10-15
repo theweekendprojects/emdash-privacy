@@ -1,0 +1,69 @@
+{
+  "name": "emdash-privacy",
+  "version": "0.0.0",
+  "description": "Per-site GDPR/TDDDG cookie consent for EmDash CMS. A themed, dark/light consent banner (DE/EN) with Google Consent Mode v2 and GPC, powered by c15t, with consent proof stored in your own D1 and no third-party backend. Later: Impressum/Datenschutz page scaffolding.",
+  "type": "module",
+  "license": "MIT",
+  "author": "The Weekend Projects",
+  "keywords": [
+    "emdash",
+    "emdash-plugin",
+    "consent",
+    "cookie-consent",
+    "gdpr",
+    "tdddg",
+    "privacy",
+    "c15t",
+    "astro",
+    "cloudflare"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/theweekendprojects/emdash-privacy.git"
+  },
+  "homepage": "https://github.com/theweekendprojects/emdash-privacy#readme",
+  "bugs": {
+    "url": "https://github.com/theweekendprojects/emdash-privacy/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "plugin": {
+    "id": "privacy"
+  },
+  "scripts": {
+    "build:client": "node scripts/build-client.mjs",
+    "selfcheck": "bash scripts/selfcheck.sh"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./sandbox": {
+      "import": "./src/sandbox-entry.ts",
+      "default": "./src/sandbox-entry.ts"
+    }
+  },
+  "files": [
+    "src",
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "emdash": ">=0.30.0"
+  },
+  "dependencies": {
+    "@c15t/browser": "3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0",
+    "zod": "^4.4.3"
+  }
+}
