@@ -3,22 +3,19 @@
  * public `save`/`services`/`assets` routes, and the daily retention purge.
  *
  * Security posture (public routes):
- *   - site id is derived SERVER-SIDE from the request host, never the payload
- *   - the save body is strictly validated (category whitelist, size caps)
- *   - a per-site per-minute KV counter is a soft flood cap; the hard cap is a
- *     Cloudflare rate-limiting rule on the route path (go-live checklist)
+ *   - site id is derived SERVER-SIDE from the configured site URL, never the payload
+ *   - the save body is strictly validated (strict schema; a client `siteId` is rejected)
+ *   - abuse control is a Cloudflare rate-limiting rule on the route path (go-live
+ *     checklist); we do not rate-limit in code
  *   - the visitor IP is never read or stored by this plugin
  */
 import { z } from "zod";
-import { PluginRouteError } from "emdash";
 import type { PageFragmentContribution } from "emdash";
 import { adminRoute } from "./admin-page.js";
 import { purgeDue, purgeExpired } from "./purge.js";
 import { buildPolicyRule } from "./rule.js";
 import { BANNER_HASH, BANNER_JS } from "./assets.generated.js";
 import { BANNER_VERSION, PLUGIN_ID, SETTINGS_DEFAULTS, resolveLanguage } from "./shared.js";
-
-const MAX_SAVES_PER_MIN = 30; // soft cap; hard cap is the CF rate-limit rule
 
 /** Route that serves the bundle. The hash is in the name, so it is immutable. */
 const BUNDLE_ROUTE = `assets/banner-${BANNER_HASH}`;
@@ -119,11 +116,12 @@ const saveSchema = z
 
 const ALLOWED_GRANT_KEYS = new Set(["necessary", "measurement", "marketing"]);
 
-// NOTE: EmDash plugin routes always JSON-serialize their return value (a
-// returned `Response` is wrapped, not sent raw), so the banner bundle cannot
-// be served from a route. Instead the `page:fragments` hook injects it inline
-// (trusted hooks emit raw markup). The Worker gzips the response, so the ~366
-// KB bundle is ~103 KB on the wire, and only on pages where the banner shows.
+// Delivery: EmDash JSON-wraps route return values, so the bundle route returns
+// the source as a string and the loader unwraps `.data`. The response is
+// `immutable`, so after the first visit the browser serves it from its own
+// cache with no network (verified). Cloudflare's edge does NOT cache the
+// `/_emdash/api/` path, so the FIRST visit per browser still runs the Worker;
+// the head `preload` starts that fetch early.
 
 export const consentRoutes = {
 	// the banner bundle: public, GET, immutable-cached (name carries the content hash)
@@ -153,21 +151,10 @@ export const consentRoutes = {
 			for (const k of ALLOWED_GRANT_KEYS) grants[k] = ctx.input.grants[k] === true;
 			grants.necessary = true; // always on
 			const siteId = siteIdFromCtx(ctx);
-			// soft per-site flood cap (no IP). ONE kv row per site holding the current
-			// minute and its count (overwritten each minute), so storage stays bounded.
-			// Ceiling: kv read-then-write is not atomic and is eventually consistent
-			// across colos, so a burst can overshoot slightly; the hard cap is a
-			// Cloudflare rate-limit rule on this route (go-live checklist).
-			const minute = Math.floor(Date.now() / 60000);
-			const key = `rl:save:${siteId}`;
-			const cur = (await ctx.kv.get(key)) as { m: number; n: number } | null;
-			const n = cur && cur.m === minute ? cur.n : 0;
-			if (n >= MAX_SAVES_PER_MIN) {
-				// 429 so the client (c15t outbox) keeps the save queued and retries later
-				throw new PluginRouteError("RATE_LIMITED", "Too many consent saves", 429);
-			}
-			await ctx.kv.set(key, { m: minute, n: n + 1 });
-
+			// Abuse control for this PUBLIC route is a Cloudflare rate-limiting rule on
+			// `/_emdash/api/plugins/emdash-privacy/save` (go-live checklist, documented
+			// in the README). We do NOT rate-limit in code: it added a kv read+write to
+			// every legitimate save, and a soft kv counter is not a real limit anyway.
 			await ctx.storage.consents.put(crypto.randomUUID(), {
 				siteId, // host-attested, authoritative
 				subjectId: ctx.input.subjectId, // c15t random client id, not person-derived
@@ -251,6 +238,16 @@ export const privacyHooks = {
 
 			const nonceAttr = config.nonce ? { nonce: config.nonce } : undefined;
 			const fragments: PageFragmentContribution[] = [
+				{
+					// Start fetching the (immutable, browser-cached) bundle in parallel
+					// with the rest of the page, instead of waiting for the body-end
+					// loader. First paint of the banner is sooner; repeat views are a
+					// cache hit regardless.
+					kind: "html",
+					placement: "head",
+					html: `<link rel="preload" as="fetch" crossorigin="anonymous" href="${BUNDLE_URL}">`,
+					key: "emdash-privacy-preload",
+				},
 				{
 					kind: "inline-script",
 					placement: "head",

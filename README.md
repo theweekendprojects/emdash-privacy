@@ -99,16 +99,18 @@ the consent mechanism itself; have a lawyer confirm.
 
 ## Operating notes
 
-- **Rate limiting.** `/save` is public. The plugin applies a per-site per-minute counter (no IP is read or
-  stored), which is only a soft cap. **Add a Cloudflare rate-limiting rule** for
-  `/_emdash/api/plugins/emdash-privacy/save` as the hard limit.
+- **Rate limiting.** `/save` is public and does no rate limiting in code (that only slowed every real
+  save). **Add a Cloudflare rate-limiting rule** for `/_emdash/api/plugins/emdash-privacy/save`.
 - **Retention.** Expired records are purged from inside `/save`, at most once a day per site. The plugin
   also schedules a daily cron task, but in testing the host did not reliably run plugin cron hooks, so do
   not depend on it.
 - **Content Security Policy.** The banner bundle is loaded with `fetch` and imported from a `blob:` URL.
   A strict CSP needs `script-src blob:` (and `'unsafe-inline'` or a nonce for the tiny inline loader).
-- **Weight.** About 1 KB is added to each page. The ~380 KB bundle (≈107 KB over the wire) is fetched
-  once from an immutable-cached URL named by its content hash.
+- **Weight.** About 1 KB of inline script is added to each page. The ~380 KB bundle (≈107 KB over the
+  wire) is named by its content hash and marked `immutable`; a `<link rel=preload>` starts the fetch
+  early, and after the first visit the browser serves it from its own cache with no network. Note:
+  Cloudflare's edge does not cache the `/_emdash/api/` path, so the first visit per browser runs the
+  Worker to fetch it.
 - **Multi-tenant.** The site key comes from the server-side site URL, never from the request body, and a
   body containing a `siteId` is rejected. The admin record counter is per site. Records live in EmDash
   plugin storage, so they follow whatever isolation your platform gives plugin storage.

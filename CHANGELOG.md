@@ -12,10 +12,11 @@ First usable release. Verified end to end on a live EmDash site (Cloudflare Work
 - Consent proof in plugin storage (D1) with no personal data; failed saves are queued by c15t and retried.
 - Admin: "Privacy" sidebar page (Block Kit) and a settings form, including banner language, policy version
   (bump = re-ask), re-ask period and retention.
-- Public `/save` is strictly validated, rejects a client-supplied `siteId`, and has a per-site soft rate
-  limit (HTTP 429). Add a Cloudflare rate-limiting rule as the hard cap.
+- Public `/save` is strictly validated and rejects a client-supplied `siteId`. No in-code rate limiting
+  (it slowed every save); use a Cloudflare rate-limiting rule instead.
 - Retention purge runs lazily from `/save` (the host did not reliably run the daily cron hook).
-- The ~380 KB bundle is served from an immutable, content-hashed route; pages only carry a ~1 KB loader.
+- The ~380 KB bundle is served from an immutable, content-hashed route; pages carry a ~1 KB loader plus a
+  `preload` hint. After the first visit the browser serves the bundle from cache (no network).
 - Self-check resolves the policy rule through c15t's real engine for several countries, so a rule the
   runtime would reject fails in CI instead of silently hiding the banner.
 
