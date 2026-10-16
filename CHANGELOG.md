@@ -15,8 +15,9 @@ First usable release. Verified end to end on a live EmDash site (Cloudflare Work
 - Public `/save` is strictly validated and rejects a client-supplied `siteId`. No in-code rate limiting
   (it slowed every save); use a Cloudflare rate-limiting rule instead.
 - Retention purge runs lazily from `/save` (the host did not reliably run the daily cron hook).
-- The ~380 KB bundle is served from an immutable, content-hashed route; pages carry a ~1 KB loader plus a
-  `preload` hint. After the first visit the browser serves the bundle from cache (no network).
+- The ~380 KB bundle is served from an immutable, content-hashed route and cached in `localStorage`; after
+  the first fetch per browser, later page views import it from `localStorage` with zero network. Pages
+  carry only a ~1 KB loader.
 - Self-check resolves the policy rule through c15t's real engine for several countries, so a rule the
   runtime would reject fails in CI instead of silently hiding the banner.
 

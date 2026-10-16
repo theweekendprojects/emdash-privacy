@@ -22,13 +22,31 @@ const BUNDLE_ROUTE = `assets/banner-${BANNER_HASH}`;
 const BUNDLE_URL = `/_emdash/api/plugins/${PLUGIN_ID}/${BUNDLE_ROUTE}`;
 
 /**
- * Tiny inline loader. The ~370 KB bundle is NOT inlined in every page: it is
- * fetched once from the cached route above and imported from a Blob URL, so
- * page views after the first only pay for this ~250-byte script. (EmDash wraps
- * route return values as JSON, so the route returns the source as a string and
- * the loader unwraps `.data`.)
+ * Tiny inline loader. The ~370 KB bundle is NOT inlined per page. It is cached
+ * in `localStorage` under a hash-keyed name, so after a visitor has it once we
+ * `import()` straight from localStorage with no network at all (not even the
+ * Worker fetch the `/_emdash/api/` edge-bypass would otherwise force on the
+ * first page of each session). On a miss we fetch once (EmDash JSON-wraps the
+ * route, so unwrap `.data`), import, then store for next time. The hash in the
+ * key auto-busts on a new bundle; a quota/parse failure just falls back to
+ * fetch, so cache trouble can never break the banner.
  */
-const LOADER = `fetch(${JSON.stringify(BUNDLE_URL)},{credentials:"omit"}).then(function(r){return r.json()}).then(function(j){return import(URL.createObjectURL(new Blob([j.data],{type:"text/javascript"})))}).catch(function(e){console.warn("[emdash-privacy] banner failed to load",e)});`;
+function makeLoader(url: string, hash: string): string {
+	const KEY = `emdash-privacy-js:${hash}`;
+	// This source string runs in the browser; keep it dependency-free and small.
+	const fn = `(function(){
+	var K=${JSON.stringify(KEY)},U=${JSON.stringify(url)};
+	function run(src){return import(URL.createObjectURL(new Blob([src],{type:"text/javascript"})))}
+	var hit;try{hit=localStorage.getItem(K)}catch(e){}
+	if(hit)return run(hit).catch(function(e){console.warn("[emdash-privacy] banner failed",e)});
+	return fetch(U,{credentials:"omit"}).then(function(r){return r.json()}).then(function(j){
+		try{localStorage.setItem(K,j.data)}catch(e){}
+		return run(j.data);
+	}).catch(function(e){console.warn("[emdash-privacy] banner failed to load",e)});
+})();`;
+	return fn.replace(/\n\t*/g, "");
+}
+const LOADER = makeLoader(BUNDLE_URL, BANNER_HASH);
 
 // ── settings ────────────────────────────────────────────────────────────────
 
@@ -239,16 +257,10 @@ export const privacyHooks = {
 			const nonceAttr = config.nonce ? { nonce: config.nonce } : undefined;
 			const fragments: PageFragmentContribution[] = [
 				{
-					// Start fetching the (immutable, browser-cached) bundle in parallel
-					// with the rest of the page, instead of waiting for the body-end
-					// loader. First paint of the banner is sooner; repeat views are a
-					// cache hit regardless.
-					kind: "html",
-					placement: "head",
-					html: `<link rel="preload" as="fetch" crossorigin="anonymous" href="${BUNDLE_URL}">`,
-					key: "emdash-privacy-preload",
-				},
-				{
+					// Config + loader in head. The loader imports the bundle from
+					// localStorage when present (no network at all), so there is NO
+					// preload link: a preload would fetch the bundle on every page even
+					// when it is already cached, which is exactly the waste we removed.
 					kind: "inline-script",
 					placement: "head",
 					code: `window.__emdashPrivacy=${JSON.stringify(config)};`,

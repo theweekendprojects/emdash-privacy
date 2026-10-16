@@ -106,11 +106,11 @@ the consent mechanism itself; have a lawyer confirm.
   not depend on it.
 - **Content Security Policy.** The banner bundle is loaded with `fetch` and imported from a `blob:` URL.
   A strict CSP needs `script-src blob:` (and `'unsafe-inline'` or a nonce for the tiny inline loader).
-- **Weight.** About 1 KB of inline script is added to each page. The ~380 KB bundle (≈107 KB over the
-  wire) is named by its content hash and marked `immutable`; a `<link rel=preload>` starts the fetch
-  early, and after the first visit the browser serves it from its own cache with no network. Note:
-  Cloudflare's edge does not cache the `/_emdash/api/` path, so the first visit per browser runs the
-  Worker to fetch it.
+- **Weight.** About 1 KB of inline script is added to each page. The ~380 KB bundle is fetched once per
+  browser, then cached in `localStorage` under a content-hash key; after that the loader imports it from
+  `localStorage` with no network at all (verified: zero bundle requests on later page views, even with
+  the HTTP cache disabled). The hash in the key busts the cache on a new version; a quota or parse error
+  falls back to the fetch, so cache trouble can't break the banner.
 - **Multi-tenant.** The site key comes from the server-side site URL, never from the request body, and a
   body containing a `siteId` is rejected. The admin record counter is per site. Records live in EmDash
   plugin storage, so they follow whatever isolation your platform gives plugin storage.
