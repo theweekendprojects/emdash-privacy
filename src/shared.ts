@@ -62,6 +62,12 @@ export const SETTINGS_SCHEMA = {
 		],
 	},
 	accentColor: { type: "string", label: "Accent color (CSS color)" },
+	requireChoice: {
+		type: "boolean",
+		label: "Require a choice before using the site",
+		description:
+			"Off (default): the banner floats and the site stays usable until the visitor chooses. On: a blocking modal that dims the page until Accept or Reject (the 'consent wall' many German sites use). Neither is legally required; a wall can even be seen as coercion. Confirm with a lawyer.",
+	},
 	privacyUrl: { type: "url", label: "Privacy policy URL" },
 	imprintUrl: { type: "url", label: "Imprint (Impressum) URL" },
 	cookieUrl: { type: "url", label: "Cookie policy URL" },
@@ -84,6 +90,7 @@ export const SETTINGS_DEFAULTS = {
 	services: "[]",
 	colorScheme: "system" as const,
 	language: "auto" as const,
+	requireChoice: false,
 	policyVersion: "1",
 	cookieMaxAgeMonths: 12,
 	retentionMonths: 36,

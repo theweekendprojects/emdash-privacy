@@ -61,6 +61,7 @@ Admin → Plugins → **Privacy**.
 | Tracked services (JSON) | Your analytics/marketing scripts. **The banner only appears when this list is non-empty.** |
 | Banner language | Auto (follows the page locale; anything that is not English gets German), Deutsch, or English. |
 | Color scheme | Follow the page (default), Light, or Dark. |
+| Require a choice (blocking wall) | Off (default): non-modal, the site stays usable until the visitor chooses. On: dims and locks the page until Accept or Reject (the "consent wall" style). Neither is legally required. |
 | Accent color | Optional CSS color; defaults to your `--color-brand`. |
 | Privacy / Imprint / Cookie URLs | Linked from the banner. |
 | Policy version | **Bump it to ask every visitor again**, for example after adding a service. |

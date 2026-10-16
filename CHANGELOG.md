@@ -8,6 +8,7 @@ First usable release. Verified end to end on a live EmDash site (Cloudflare Work
   equal weight, preference dialog, floating reopen button, non-blocking card (bottom sheet on phones).
 - Follows the host site: colors, font and radius from the site's CSS variables, light/dark from the page
   and updated live when the theme is toggled.
+- Optional "require a choice" blocking wall (operator setting, default off); default is a non-modal banner that leaves the site usable.
 - Gated scripts, Google Consent Mode v2 (basic variant: `default` denied, then `update`), GPC.
 - Consent proof in plugin storage (D1) with no personal data; failed saves are queued by c15t and retried.
 - Admin: "Privacy" sidebar page (Block Kit) and a settings form, including banner language, policy version

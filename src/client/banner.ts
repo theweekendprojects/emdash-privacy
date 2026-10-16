@@ -20,6 +20,7 @@ import { strings } from "../strings.js";
 interface PrivacyConfig {
 	locale: "de" | "en";
 	colorScheme: "system" | "light" | "dark";
+	requireChoice?: boolean;
 	accentColor?: string;
 	rule: unknown; // PolicyRuleOut from rule.ts, serialized server-side
 	scripts: unknown[]; // c15t Script[] built from the services list
@@ -211,6 +212,11 @@ function start(config: PrivacyConfig): void {
 	// set the scheme class BEFORE c15t mounts, so there is no wrong-scheme flash
 	if (config.colorScheme === "system") followPageScheme();
 
+	// requireChoice (operator setting, default off): a blocking "consent wall"
+	// (dim overlay + scroll lock, like many German sites) vs the default
+	// non-modal floating card that leaves the site usable before a choice.
+	const blocking = config.requireChoice === true;
+
 	const client = init({
 		mode,
 		nonce: config.nonce,
@@ -220,9 +226,9 @@ function start(config: PrivacyConfig): void {
 			colorScheme: config.colorScheme === "system" ? null : config.colorScheme,
 			theme: buildTheme(config.accentColor) as never,
 			css: SHADOW_CSS,
-			// Non-modal: no dim overlay, no scroll lock, so Impressum/Datenschutz
-			// stay readable before a choice is made (FR1).
-			banner: { hideBranding: true, scrollLock: false },
+			// Default: no overlay, no scroll lock, so Impressum/Datenschutz stay
+			// readable before a choice. `requireChoice` dims and locks instead.
+			banner: { hideBranding: true, scrollLock: blocking },
 			dialog: { hideBranding: true },
 			// Floating reopen button = the "Cookie-Einstellungen" control (FR7).
 			trigger: { position: "bottom-left", showWhen: "after-consent" },
@@ -235,15 +241,24 @@ function start(config: PrivacyConfig): void {
 		legalLinks: config.legalLinks as never,
 		reloadOnConsentRevoked: true,
 		// Accept and Reject are BOTH primary: equal prominence, no dark pattern.
-		// Settings is the quiet third action. Non-blocking floating card.
+		// Settings is the quiet third action. Default is a non-blocking floating
+		// card; `requireChoice` makes it a centered wall that blocks the page.
 		presentation: {
-			prompt: {
-				variant: "floating",
-				position: "bottom-left",
-				primaryActions: ["accept", "reject"],
-				layout: [["reject", "accept"], ["customize"]],
-				blocking: false,
-			},
+			prompt: blocking
+				? {
+						variant: "wall",
+						position: "center",
+						primaryActions: ["accept", "reject"],
+						layout: [["reject", "accept"], ["customize"]],
+						blocking: true,
+					}
+				: {
+						variant: "floating",
+						position: "bottom-left",
+						primaryActions: ["accept", "reject"],
+						layout: [["reject", "accept"], ["customize"]],
+						blocking: false,
+					},
 		},
 	});
 	// init() already mounts the UI with the `ui` options above. A second

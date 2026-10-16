@@ -55,6 +55,7 @@ interface ResolvedSettings {
 	services: unknown[];
 	colorScheme: "system" | "light" | "dark";
 	language: string;
+	requireChoice: boolean;
 	accentColor?: string;
 	privacyUrl?: string;
 	imprintUrl?: string;
@@ -86,6 +87,7 @@ async function loadSettings(ctx: any): Promise<ResolvedSettings> {
 		services,
 		colorScheme: (await readSetting<ResolvedSettings["colorScheme"]>(ctx, "colorScheme")) ?? d.colorScheme,
 		language: (await readSetting<string>(ctx, "language")) ?? d.language,
+		requireChoice: (await readSetting<boolean>(ctx, "requireChoice")) ?? d.requireChoice,
 		accentColor: await readSetting<string>(ctx, "accentColor"),
 		privacyUrl: await readSetting<string>(ctx, "privacyUrl"),
 		imprintUrl: await readSetting<string>(ctx, "imprintUrl"),
@@ -245,6 +247,7 @@ export const privacyHooks = {
 			const config = {
 				locale,
 				colorScheme: s.colorScheme,
+				requireChoice: s.requireChoice,
 				accentColor: s.accentColor,
 				rule,
 				scripts: buildScripts(s.services as any[]),
